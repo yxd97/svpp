@@ -1,0 +1,7 @@
+{
+    "supported versions" :{
+        "2020.2": "/work/shared/common/vitis_setup_scripts/2020.2.sh",
+        "2022.1": "/work/shared/common/vitis_setup_scripts/2022.1.sh"
+    },
+    "default version":"2022.1"
+}

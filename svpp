@@ -1,0 +1,207 @@
+#!/usr/bin/python3
+
+import json, os, sys
+import subprocess
+from typing import List, Tuple
+#===============================================================================
+# Read global configuration from config.json
+#===============================================================================
+if "SVPP_ROOT" not in os.environ:
+    raise ValueError(
+        "Please set the SVPP_ROOT environment variable"
+        " to the root of the svpp repository."
+    )
+SVPP_ROOT = os.environ["SVPP_ROOT"]
+global_config_path = os.path.join(SVPP_ROOT, "config.json")
+with open(global_config_path, "r") as json_file:
+    global_config = json.load(json_file)
+DEFAULT_VERSION:str = global_config["default version"]
+SUPPORTED_VERSIONS:str = global_config["supported versions"]
+
+#===============================================================================
+# Load other functions
+#===============================================================================
+from env_utils import purge_env
+from prepare_pack_xo import prepare_pack_xo
+
+#===============================================================================
+# Utilities to parse commandline arguments
+#===============================================================================
+def parse_args(args:List[str]) -> Tuple[str, str, List[str]]:
+    '''
+        Parse commandline arguments and return HLS version,
+        backend version and v++ arguments
+    '''
+    if len(args) < 1:
+        raise ValueError("Expected at least one argument")
+    hls_version = DEFAULT_VERSION
+    backend_version = DEFAULT_VERSION
+    vpp_args = []
+    argidx = 0
+    argc = len(args)
+    while argidx < argc:
+        if args[argidx] == "--hls-version":
+            hls_version = args[argidx+1]
+            argidx += 2
+        elif args[argidx] == "--backend-version":
+            backend_version = args[argidx+1]
+            argidx += 2
+        else:
+            vpp_args.append(args[argidx])
+            argidx += 1
+    return hls_version, backend_version, vpp_args
+
+def get_build_dir(vpp_args:List[str]) -> str:
+    '''
+        Get the build directory from the v++ arguments,
+        specified by the `--temp_dir` flag.
+        Default is `./_x/temp`.
+        (Source: https://docs.amd.com/r/en-US/ug1393-vitis-application-acceleration/v-General-Options)
+    '''
+    try:
+        return vpp_args[vpp_args.index("--temp_dir") + 1]
+    except ValueError:
+        return "./_x/temp"
+
+def get_kernel_name(vpp_args:List[str]) -> str:
+    '''
+        Get the kernel name from the v++ arguments,
+        specified by the `-k` or `--kernel` flag.
+        (Source: https://docs.amd.com/r/en-US/ug1393-vitis-application-acceleration/v-General-Options)
+    '''
+    try:
+        return vpp_args[vpp_args.index("-k") + 1]
+    except ValueError:
+        return vpp_args[vpp_args.index("--kernel") + 1]
+
+def get_target(vpp_args:List[str]) -> str:
+    '''
+        Get the target from the v++ arguments,
+        specified by the `-t` or `--target` flag.
+        Defult is `hw`.
+        (Source: https://docs.amd.com/r/en-US/ug1393-vitis-application-acceleration/v-General-Options)
+    '''
+    try:
+        return vpp_args[vpp_args.index("-t") + 1]
+    except ValueError:
+        try:
+            return vpp_args[vpp_args.index("--target") + 1]
+        except ValueError:
+            return "hw"
+
+def check_version(version:str):
+    '''
+        Check if the version is supported.
+    '''
+    if version not in SUPPORTED_VERSIONS:
+        raise ValueError(
+            f"Version {version} not supported. "
+            f"Supported versions: {list(SUPPORTED_VERSIONS.keys())}"
+        )
+
+#===============================================================================
+# Functions to run steps in the flow
+#===============================================================================
+
+# Level 1: launch a subprocess
+
+def launch_subproc(commands:str):
+    '''
+        Launch a subprocess and print the output in live.
+        Raises an `RuntimeError` if the command fails.
+    '''
+    command_name = commands.split(";")[-1].strip().split(" ")[0]
+    proc = subprocess.Popen(
+        commands, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True
+    )
+    while proc.poll() is None:
+        line = proc.stdout.readline()
+        print(line.decode("utf-8"), end="")
+    ret = proc.returncode
+    print(proc.stdout.read())
+    if ret != 0:
+        print(proc.stderr.decode("utf-8"))
+        raise RuntimeError(f"{command_name} failed with error code {ret}")
+
+# Level 2: invoke tools
+
+def run_vpp(version:str, vpp_args:List[str]):
+    check_version(version)
+    purge_env()
+    commands = f'source {SUPPORTED_VERSIONS[version]}; v++ {" ".join(vpp_args)}'
+    launch_subproc(commands)
+
+def pack_xo(version:str, vivado_args:List[str]):
+    check_version(version)
+    purge_env()
+    commands = f'source {SUPPORTED_VERSIONS[version]}; vivado {" ".join(vivado_args)}'
+    launch_subproc(commands)
+
+# Level 3: compile and link
+
+def compile_pack(hls_version:str, backend_version:str, vpp_args:List[str]):
+    if "-s" not in vpp_args and "--save-temps" not in vpp_args:
+        raise ValueError("This tool requires the --save-temps flag to be set.")
+    build_dir = get_build_dir(vpp_args)
+    kernel_name = get_kernel_name(vpp_args)
+    # if the kernel is already compiled, skip the compilation step
+    if not os.path.exists(os.path.join(build_dir, kernel_name)):
+        run_vpp(hls_version, vpp_args)
+    pack_dir = prepare_pack_xo(build_dir, kernel_name)
+    vivado_args = [
+        "-mode batch",
+        "-source ./pack_xo.tcl",
+        "-tclargs",
+        f"--project_name pack_{kernel_name}",
+        f"--top {kernel_name}",
+        f"--origin_dir {pack_dir}"
+    ]
+    pack_xo(backend_version, vivado_args)
+
+def link(backend_version, vpp_args):
+    run_vpp(backend_version, " ".join(vpp_args))
+
+#===============================================================================
+# Main function
+#===============================================================================
+
+def main():
+    '''svpp: Using any HLS verison to target a specific backend version
+
+    Usage:
+        svpp --hls-version <version> --backend-version <version> [v++ arguments]
+
+    The supported versions are written in the config.json file at the root of the svpp repository.
+    Please modify the config.json file according to your environment.
+
+    Note: svpp -h ro svpp --help will print this message, not the help of the Vitis compiler.
+    To see the help of the Vitis compiler, use v++ -h or v++ --help.
+    '''
+    args = sys.argv[1:]
+
+    # Print help text
+    if "-h" in args or "--help" in args:
+        print(main.__doc__)
+        return
+
+    hls_version, backend_version, vpp_args = parse_args(args)
+
+    # If building for software emulation, directly use v++ with banckend version
+    target = get_target(vpp_args)
+    if target == "sw_emu":
+        run_vpp(backend_version, vpp_args)
+
+    # Otherwise, run the full flow
+    if "-c" in vpp_args or "--compile" in vpp_args:
+        compile_pack(hls_version, backend_version, vpp_args)
+
+    if "-l" in vpp_args or "--link" in vpp_args:
+        link(backend_version, vpp_args)
+
+
+if __name__ == "__main__":
+    # build_dir = "tests/build_hw_xilinx_u280_gen3x16_xdma_1_202211_1"
+    # kernel_name = "vvadd"
+    # pack_dir = prepare_pack_xo(build_dir, kernel_name)
+
+    main()

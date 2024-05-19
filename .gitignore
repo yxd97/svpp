@@ -1,0 +1,26 @@
+# for python:
+__pychche__
+*.pyc
+*.pyo
+
+# for vitis:
+# logs and reports
+test/*.log
+test/*.jou
+test/*.str
+test/*.compile_summary
+test/*.link_summary
+test/*.ltx
+
+# temp files
+test/.run
+test/.Xil
+test/.ipcache
+
+# build dir
+test/build*
+
+# generated files
+test/*.xo
+test/*.xclbin
+test/*.xclbin.info
