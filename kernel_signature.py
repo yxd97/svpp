@@ -8,8 +8,9 @@ class Port:
         self.mode = element.attrib["mode"]
         self.type = element.attrib["portType"]
         self.data_width = int(element.attrib["dataWidth"])
-        self.base = int(element.attrib["base"], base=16)
-        self.range = int(element.attrib["range"], base=16)
+        if self.type != "stream":
+            self.base = int(element.attrib["base"], base=16)
+            self.range = int(element.attrib["range"], base=16)
 
     def __str__(self):
         return f"{self.type} {self.mode} {self.name}"
@@ -17,9 +18,12 @@ class Port:
 
 class KernelArgument:
     def __init__(self, element:ET.Element):
-        self.name = element.attrib["name"]
+        self.name = element.attrib["name"]\
+                    .replace("&lt;", "<")\
+                    .replace("&amp;", "&")
         self.type = element.attrib["type"]
         self.is_pointer = element.attrib["addressQualifier"] == "1"
+        self.is_stream = element.attrib["addressQualifier"] == "4"
         self.port_name = element.attrib["port"]
         self.size = int(element.attrib["size"], base=16)
         self.offset = int(element.attrib["offset"], base=16)

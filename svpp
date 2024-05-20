@@ -89,6 +89,17 @@ def get_target(vpp_args:List[str]) -> str:
         except ValueError:
             return "hw"
 
+def get_output(vpp_args:List[str]) -> str:
+    '''
+        Get the output directory from the v++ arguments,
+        specified by the `-o` or `--output` flag.
+        (Source: https://docs.amd.com/r/en-US/ug1393-vitis-application-acceleration/v-General-Options)
+    '''
+    try:
+        return vpp_args[vpp_args.index("-o") + 1]
+    except ValueError:
+        return vpp_args[vpp_args.index("--output") + 1]
+
 def check_version(version:str):
     '''
         Check if the version is supported.
@@ -105,23 +116,24 @@ def check_version(version:str):
 
 # Level 1: launch a subprocess
 
-def launch_subproc(commands:str):
+def launch_subproc(commands:str, dir=None):
     '''
         Launch a subprocess and print the output in live.
         Raises an `RuntimeError` if the command fails.
     '''
+    if dir is not None:
+        commands = f"cd {dir}; {commands}"
     command_name = commands.split(";")[-1].strip().split(" ")[0]
     proc = subprocess.Popen(
-        commands, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True
+        commands, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True
     )
     while proc.poll() is None:
         line = proc.stdout.readline()
         print(line.decode("utf-8"), end="")
+    print(proc.stdout.read().decode("utf-8"))
     ret = proc.returncode
-    print(proc.stdout.read())
     if ret != 0:
-        print(proc.stderr.decode("utf-8"))
-        raise RuntimeError(f"{command_name} failed with error code {ret}")
+        raise SystemExit(f"ERROR: {command_name} failed with error code {ret}")
 
 # Level 2: invoke tools
 
@@ -131,11 +143,11 @@ def run_vpp(version:str, vpp_args:List[str]):
     commands = f'source {SUPPORTED_VERSIONS[version]}; v++ {" ".join(vpp_args)}'
     launch_subproc(commands)
 
-def pack_xo(version:str, vivado_args:List[str]):
+def pack_xo(version:str, vivado_args:List[str], pack_dir:str):
     check_version(version)
     purge_env()
     commands = f'source {SUPPORTED_VERSIONS[version]}; vivado {" ".join(vivado_args)}'
-    launch_subproc(commands)
+    launch_subproc(commands, dir=pack_dir)
 
 # Level 3: compile and link
 
@@ -144,22 +156,33 @@ def compile_pack(hls_version:str, backend_version:str, vpp_args:List[str]):
         raise ValueError("This tool requires the --save-temps flag to be set.")
     build_dir = get_build_dir(vpp_args)
     kernel_name = get_kernel_name(vpp_args)
-    # if the kernel is already compiled, skip the compilation step
-    if not os.path.exists(os.path.join(build_dir, kernel_name)):
+
+    original_xo = get_output(vpp_args)
+
+    # if the kernel has not been compiled yet, compile it
+    if not os.path.exists(original_xo):
         run_vpp(hls_version, vpp_args)
+
+    # if the hls version matches the backend version, skip the pack step
+    if hls_version == backend_version:
+        return
+
+    os.system(f"mv {original_xo} {original_xo}.old")
     pack_dir = prepare_pack_xo(build_dir, kernel_name)
     vivado_args = [
         "-mode batch",
-        "-source ./pack_xo.tcl",
+        "-notrace",
+        "-source ./create_proj.tcl",
         "-tclargs",
         f"--project_name pack_{kernel_name}",
         f"--top {kernel_name}",
-        f"--origin_dir {pack_dir}"
+        f"--origin_dir ."
     ]
-    pack_xo(backend_version, vivado_args)
+    pack_xo(backend_version, vivado_args, pack_dir)
+    os.system(f"cp {pack_dir}/export/{kernel_name}.xo {original_xo}")
 
 def link(backend_version, vpp_args):
-    run_vpp(backend_version, " ".join(vpp_args))
+    run_vpp(backend_version, vpp_args)
 
 #===============================================================================
 # Main function
@@ -185,6 +208,8 @@ def main():
         return
 
     hls_version, backend_version, vpp_args = parse_args(args)
+    print(f"HLS version {hls_version} -> backend version {backend_version}")
+    print(f"v++ arguments: {vpp_args}")
 
     # If building for software emulation, directly use v++ with banckend version
     target = get_target(vpp_args)

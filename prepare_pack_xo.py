@@ -10,8 +10,9 @@ if "SVPP_ROOT" not in os.environ:
     )
 SVPP_ROOT = os.environ["SVPP_ROOT"]
 
-TCL_BODY = [
+TCL_FUNCS_FOR_MM = [
     "proc add_reg { name parent_addrblk offset size description } {\n",
+    "    puts [format \"INFO: \[User Message\] Adding register %s to %s\" $name $parent_addrblk]\n",
     "    ipx::add_register $name $parent_addrblk\n",
     "    set_property display_name $name [ipx::get_registers $name -of_objects $parent_addrblk]\n",
     "    set_property description $description [ipx::get_registers $name -of_objects $parent_addrblk]\n",
@@ -31,44 +32,65 @@ TCL_BODY = [
     'add_reg "CTRL"   $addrblk 0 32 "Control Register"\n',
     'add_reg "GIER"   $addrblk 4 32 "Global Interrupt Enable Register"\n',
     'add_reg "IP_IER" $addrblk 8 32 "IP Interrupt Enable Register"\n',
-    'add_reg "IP_ISR" $addrblk 12 32 "IP Interrupt Status Register"\n',
-    "\n",
+    'add_reg "IP_ISR" $addrblk 12 32 "IP Interrupt Status Register"\n'
 ]
-
-def argument_tcl(arg:KernelArgument) -> List[str]:
-    '''
-        Returns the tcl commands to add a register for the argument,
-        using the defined `add_reg` procedure in `TCL_BODY`.
-    '''
-    tcl = [
-        f'add_reg "{arg.name}" $addrblk {arg.offset} {arg.size*8} "{arg.name}_DATA"\n',
-    ]
-    if arg.is_pointer:
-        tcl.extend(f'bind_to_gmem "{arg.name}" "{arg.port_name}" $addrblk\n')
-
-    return tcl + ["\n"]
-
 
 def prepare_pack_xo(build_dir:str, kernel_name:str) -> str:
     '''
         Copy the HLS-generated Verilog to a new directory and
         generate the tcl script for packaging the `.xo` file.
     '''
-    pack_dir = os.path.join(build_dir, "pack")
+    pack_dir = os.path.join(build_dir, f"pack_{kernel_name}")
     os.makedirs(pack_dir, exist_ok=True)
 
+    hls_verilog_dir = os.path.join(
+        build_dir, kernel_name, kernel_name, kernel_name,
+        "solution", "impl", "verilog"
+    )
     verilog_dir = os.path.join(pack_dir, "src")
-    hls_verilog_dir = os.path.join(build_dir, kernel_name, kernel_name, kernel_name)
+    os.makedirs(verilog_dir, exist_ok=True)
+    os.system(f"cp {hls_verilog_dir}/*.v {verilog_dir}")
 
-    master_tcl = os.path.join(SVPP_ROOT, "scripts", "pack_xo.tcl")
+    master_tcl = os.path.join(SVPP_ROOT, "scripts", "create_proj.tcl")
     os.system(f"cp {master_tcl} {pack_dir}")
 
     xml = os.path.join(build_dir, kernel_name, kernel_name, kernel_name, "kernel.xml")
     signature = KernelSignature(ET.parse(xml).getroot())
-    tcl = TCL_BODY.copy()
-    for arg in signature.args:
-        tcl.extend(argument_tcl(arg))
-    with open(os.path.join(pack_dir, "krenel_regs.tcl"), "w") as f:
-        f.writelines(tcl)
+
+    # associate clock to interfaces
+    # stream interface use the same name as its argument, plus a "_V" suffix
+    # we rename it to the variable name in the kernel function
+    # so that the sc tags still work
+    tcl_rename_stream = [
+        f"set_property name {arg.name} [ipx::get_bus_interfaces {arg.name}_V -of_objects [ipx::current_core]]\n"
+        for arg in signature.args if arg.is_stream
+    ]
+    tcl_set_clk_stream = [
+        f"ipx::associate_bus_interfaces -busif {arg.name} -clock ap_clk [ipx::current_core]\n"
+        for arg in signature.args if arg.is_stream
+    ]
+
+    # memory mapped interface use lowercase port name
+    tcl_set_clk_mm = [
+        f"ipx::associate_bus_interfaces -busif {port.name.lower()} -clock ap_clk [ipx::current_core]\n"
+        for port in signature.ports.values() if port.type == "addressable"
+    ]
+    tcl_reg_map = [
+        f"add_reg {arg.name} $addrblk {arg.offset} {arg.size*8} {arg.name}_DATA\n"
+        for arg in signature.args if not arg.is_stream
+    ]
+    tcl_reg_map += [
+        f"bind_to_gmem {arg.name} {arg.port_name.lower()} $addrblk\n"
+        for arg in signature.args if not arg.is_stream and arg.is_pointer
+    ]
+
+    with open(os.path.join(pack_dir, "kernel_regs.tcl"), "w") as f:
+        f.writelines(tcl_rename_stream)
+        f.writelines(tcl_set_clk_stream)
+        # free-running kernel does not have register mapping
+        if signature.protocol != "ap_ctrl_none":
+            f.writelines(TCL_FUNCS_FOR_MM)
+            f.writelines(tcl_set_clk_mm)
+            f.writelines(tcl_reg_map)
 
     return pack_dir

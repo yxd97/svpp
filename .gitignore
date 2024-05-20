@@ -22,5 +22,6 @@ test/build*
 
 # generated files
 test/*.xo
+test/*.xo.old
 test/*.xclbin
 test/*.xclbin.info
