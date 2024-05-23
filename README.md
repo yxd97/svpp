@@ -1,4 +1,4 @@
-# SVPP: Mix-matching HLS and Backend Versions in Vitis
+# SVPP: Mixing HLS and Backend Versions in Vitis
 `vpp` means `v++`, the command-line binary for building FPGA bitstreams
 in the [Vitis Unified Software Platform](https://www.xilinx.com/products/design-tools/vitis.html)
 from AMD.
@@ -12,7 +12,7 @@ physical implementation support from the latest Vivado version;
 or maybe in your setup, the version of the deivice shell is fixed, and you would like
 to explore features of new tools.
 
-This tool, `svpp`, is designed to help you mix-matching the versions of HLS and
+This tool, `svpp`, is designed to help you mix the versions of HLS and
 backend tools in Vitis, by providing a wrapper above the `v++` compiler.
 
 > What does "s" stands for? Could be "super", "switch", "separate", ("sweet", "smile", ...);
