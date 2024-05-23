@@ -1,96 +1,103 @@
-import os
-import xml.etree.ElementTree as ET
-from typing import List
-from kernel_signature import KernelSignature, KernelArgument, Port
+import os, re
+from typing import Tuple
 
-if "SVPP_ROOT" not in os.environ:
-    raise ValueError(
-        "Please set the SVPP_ROOT environment variable"
-        " to the root of the svpp repository."
-    )
-SVPP_ROOT = os.environ["SVPP_ROOT"]
+__PATTERNS = {
+    "kernel_xml"       : r'set kernel_xml .*',
+    "solution_dir"     : r'set solution_dir ".*"',
+    "debug_dir"        : r'set debug_dir ".*"',
+    "output_xo"        : r'set kernel_xo ".*"',
+    "vhdl_path"        : r'set VhdlFiles .*',
+    "verilog_path"     : r'set VerilogFiles .*',
+    "swdriver_path"    : r'set SWDriverFiles .*',
+    "subcore_path"     : r'set SubcoreFiles .*',
+    "doc_path"         : r'set DocumentFiles .*',
+    "bd_path"          : r'set BDFiles .*',
+    "constraints_path" : r'set ConstraintFiles .*',
+    "misc_path"        : r'set MiscFiles .*',
+}
 
-TCL_FUNCS_FOR_MM = [
-    "proc add_reg { name parent_addrblk offset size description } {\n",
-    "    puts [format \"INFO: \[User Message\] Adding register %s to %s\" $name $parent_addrblk]\n",
-    "    ipx::add_register $name $parent_addrblk\n",
-    "    set_property display_name $name [ipx::get_registers $name -of_objects $parent_addrblk]\n",
-    "    set_property description $description [ipx::get_registers $name -of_objects $parent_addrblk]\n",
-    "    set_property size $size [ipx::get_registers $name -of_objects $parent_addrblk]\n",
-    "    set_property address_offset $offset [ipx::get_registers $name -of_objects $parent_addrblk]\n",
-    "}\n",
-    "\n",
-    "proc bind_to_gmem { reg_name gmem_name reg_addrblk } {\n",
-    '    puts [format "INFO: \[User Message\] Binding %s of %s to %s" $reg_name $reg_addrblk $gmem_name]\n',
-    '    puts [ipx::get_registers $reg_name -of_objects $reg_addrblk]\n',
-    "    ipx::add_register_parameter ASSOCIATED_BUSIF [ipx::get_registers $reg_name -of_objects $reg_addrblk]\n",
-    "    set_property value $gmem_name [ipx::get_register_parameters ASSOCIATED_BUSIF -of_objects [ipx::get_registers $reg_name -of_objects $reg_addrblk]]\n",
-    "}\n",
-    "\n",
-    "set addrblk [ipx::get_address_blocks reg0 -of_objects [ipx::get_memory_maps s_axi_control -of_objects [ipx::current_core]]]\n"
-    "\n",
-    'add_reg "CTRL"   $addrblk 0 32 "Control Register"\n',
-    'add_reg "GIER"   $addrblk 4 32 "Global Interrupt Enable Register"\n',
-    'add_reg "IP_IER" $addrblk 8 32 "IP Interrupt Enable Register"\n',
-    'add_reg "IP_ISR" $addrblk 12 32 "IP Interrupt Status Register"\n'
-]
+__TEMPLATES = {
+    "kernel_xml"       : 'set kernel_xml "{}"\n',
+    "solution_dir"     : 'set solution_dir "{}"\n',
+    "debug_dir"        : 'set debug_dir "{}"\n',
+    "output_xo"        : 'set kernel_xo "{}"\n',
+    "vhdl_path"        : 'set VhdlFiles [sort_file_names [glob -nocomplain {}/*] ${{Top}}.vhd]\n',
+    "verilog_path"     : 'set VerilogFiles [sort_file_names [glob -nocomplain {}/*] ${{Top}}.v]\n',
+    "swdriver_path"    : 'set SWDriverFiles [sort_file_names [glob-r {}]]\n',
+    "subcore_path"     : 'set SubcoreFiles [sort_file_names [glob -nocomplain {}/*]]\n',
+    "doc_path"         : 'set DocumentFiles [sort_file_names [glob -nocomplain {}/*]]\n',
+    "bd_path"          : 'set BDFiles [sort_file_names [glob -nocomplain {}/*]]\n',
+    "constraints_path" : 'set ConstraintFiles [sort_file_names [glob -nocomplain {}/*]]\n',
+    "misc_path"        : 'set MiscFiles [sort_file_names [glob -nocomplain {}/*]]\n',
+}
 
-def prepare_pack_xo(build_dir:str, kernel_name:str) -> str:
+
+def prepare_pack_xo(build_dir:str, kernel_name:str) -> Tuple[str, str, str]:
     '''
         Copy the HLS-generated Verilog to a new directory and
         generate the tcl script for packaging the `.xo` file.
+
+        Returns : `(pack_dir, ippack_tcl, output_xo)`
+        The path to the pack working directory,
+        and paths (relative to the working directory)
+        to the tcl script and the `.xo` file.
     '''
     pack_dir = os.path.join(build_dir, f"pack_{kernel_name}")
     os.makedirs(pack_dir, exist_ok=True)
 
-    hls_verilog_dir = os.path.join(
-        build_dir, kernel_name, kernel_name, kernel_name,
-        "solution", "impl", "verilog"
+    # move the hls solution to the packing dir
+    hls_proj = os.path.join(
+        build_dir, kernel_name, kernel_name, kernel_name
     )
-    verilog_dir = os.path.join(pack_dir, "src")
-    os.makedirs(verilog_dir, exist_ok=True)
-    os.system(f"cp {hls_verilog_dir}/*.v {verilog_dir}")
+    os.system(
+        "cp -r "
+        f"{os.path.join(hls_proj, 'solution')} "
+        f"{pack_dir}"
+    )
 
-    master_tcl = os.path.join(SVPP_ROOT, "scripts", "create_proj.tcl")
-    os.system(f"cp {master_tcl} {pack_dir}")
+    # set some paths
+    ip_dir = os.path.join(pack_dir, 'solution', 'impl', 'ip')
+    correct_paths = {
+        "kernel_xml"       : os.path.join(ip_dir, "..", "kernel", "kernel.xml"),
+        "solution_dir"     : os.path.join(pack_dir, 'solution'),
+        "debug_dir"        : os.path.join(pack_dir, 'solution', ".debug"),
+        "output_xo"        : os.path.join(pack_dir, "export", f"{kernel_name}.xo"),
+        "vhdl_path"        : os.path.join(ip_dir, "hdl", "vhdl"),
+        "verilog_path"     : os.path.join(ip_dir, "hdl", "verilog"),
+        "swdriver_path"    : os.path.join(ip_dir, "drivers"),
+        "subcore_path"     : os.path.join(ip_dir, "subcore"),
+        "doc_path"         : os.path.join(ip_dir, "doc"),
+        "bd_path"          : os.path.join(ip_dir, "bd"),
+        "constraints_path" : os.path.join(ip_dir, "constraints"),
+        "misc_path"        : os.path.join(ip_dir, "misc"),
+    }
 
-    xml = os.path.join(build_dir, kernel_name, kernel_name, kernel_name, "kernel.xml")
-    signature = KernelSignature(ET.parse(xml).getroot())
+    # turn them into absolute paths since vivado will be switching working directory
+    abs_correct_paths = {key: os.path.abspath(path) for key, path in correct_paths.items()}
 
-    # associate clock to interfaces
-    # stream interface use the same name as its argument, plus a "_V" suffix
-    # we rename it to the variable name in the kernel function
-    # so that the sc tags still work
-    tcl_rename_stream = [
-        f"set_property name {arg.name} [ipx::get_bus_interfaces {arg.name}_V -of_objects [ipx::current_core]]\n"
-        for arg in signature.args if arg.is_stream
-    ]
-    tcl_set_clk_stream = [
-        f"ipx::associate_bus_interfaces -busif {arg.name} -clock ap_clk [ipx::current_core]\n"
-        for arg in signature.args if arg.is_stream
-    ]
+    # format updates
+    updates = {key: template.format(abs_correct_paths[key]) for key, template in __TEMPLATES.items()}
 
-    # memory mapped interface use lowercase port name
-    tcl_set_clk_mm = [
-        f"ipx::associate_bus_interfaces -busif {port.name.lower()} -clock ap_clk [ipx::current_core]\n"
-        for port in signature.ports.values() if port.type == "addressable"
-    ]
-    tcl_reg_map = [
-        f"add_reg {arg.name} $addrblk {arg.offset} {arg.size*8} {arg.name}_DATA\n"
-        for arg in signature.args if not arg.is_stream
-    ]
-    tcl_reg_map += [
-        f"bind_to_gmem {arg.name} {arg.port_name.lower()} $addrblk\n"
-        for arg in signature.args if not arg.is_stream and arg.is_pointer
-    ]
+    # join patterns with updates (use pattern as key)
+    lines_to_update = {__PATTERNS[key]: updates[key] for key in updates.keys()}
 
-    with open(os.path.join(pack_dir, "kernel_regs.tcl"), "w") as f:
-        f.writelines(tcl_rename_stream)
-        f.writelines(tcl_set_clk_stream)
-        # free-running kernel does not have register mapping
-        if signature.protocol != "ap_ctrl_none":
-            f.writelines(TCL_FUNCS_FOR_MM)
-            f.writelines(tcl_set_clk_mm)
-            f.writelines(tcl_reg_map)
+    # modify the tcl script to generate the `.xo` file
+    ippack_tcl = os.path.join(ip_dir, 'run_ippack.tcl')
+    with open(ippack_tcl, "r") as f:
+        content = f.readlines()
 
-    return pack_dir
+    updated = {key: False for key in lines_to_update.keys()}
+
+    for i in range(len(content)):
+        for pattern, new_content in lines_to_update.items():
+            if not updated[pattern] and re.match(pattern, content[i]):
+                content[i] = new_content
+                updated[pattern] = True
+        if all(updated.values()):
+            break
+
+    with open(ippack_tcl, "w") as f:
+        f.writelines(content)
+
+    return pack_dir, os.path.relpath(ippack_tcl, start=pack_dir), os.path.relpath(correct_paths["output_xo"], start=pack_dir)
+

@@ -25,3 +25,6 @@ test/*.xo
 test/*.xo.old
 test/*.xclbin
 test/*.xclbin.info
+
+# local files
+.local

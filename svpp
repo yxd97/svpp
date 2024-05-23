@@ -1,17 +1,12 @@
 #!/usr/bin/python3
 
-import json, os, sys
+import time, logging, json, os, sys
 import subprocess
 from typing import List, Tuple
 #===============================================================================
 # Read global configuration from config.json
 #===============================================================================
-if "SVPP_ROOT" not in os.environ:
-    raise ValueError(
-        "Please set the SVPP_ROOT environment variable"
-        " to the root of the svpp repository."
-    )
-SVPP_ROOT = os.environ["SVPP_ROOT"]
+SVPP_ROOT = os.path.dirname(os.path.abspath(__file__))
 global_config_path = os.path.join(SVPP_ROOT, "config.json")
 with open(global_config_path, "r") as json_file:
     global_config = json.load(json_file)
@@ -121,9 +116,10 @@ def launch_subproc(commands:str, dir=None):
         Launch a subprocess and print the output in live.
         Raises an `RuntimeError` if the command fails.
     '''
+    logger = logging.getLogger()
     if dir is not None:
         commands = f"cd {dir}; {commands}"
-    command_name = commands.split(";")[-1].strip().split(" ")[0]
+    logger.info(f"Running subprocess: {commands}")
     proc = subprocess.Popen(
         commands, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True
     )
@@ -133,25 +129,34 @@ def launch_subproc(commands:str, dir=None):
     print(proc.stdout.read().decode("utf-8"))
     ret = proc.returncode
     if ret != 0:
-        raise SystemExit(f"ERROR: {command_name} failed with error code {ret}")
+        logger.error(f"{commands} failed with error code {ret}")
+        raise SystemExit(f"Unable to execute {commands}")
 
 # Level 2: invoke tools
 
 def run_vpp(version:str, vpp_args:List[str]):
+    logger = logging.getLogger()
     check_version(version)
     purge_env()
+    logger.info(f"Running v++ with version {version}")
+    logger.info(f"v++ arguments: {' '.join(vpp_args)}")
     commands = f'source {SUPPORTED_VERSIONS[version]}; v++ {" ".join(vpp_args)}'
     launch_subproc(commands)
 
 def pack_xo(version:str, vivado_args:List[str], pack_dir:str):
+    logger = logging.getLogger()
     check_version(version)
     purge_env()
+    logger.info(f"Running vivado with version {version}")
+    logger.info(f"vivado arguments: {' '.join(vivado_args)}")
     commands = f'source {SUPPORTED_VERSIONS[version]}; vivado {" ".join(vivado_args)}'
     launch_subproc(commands, dir=pack_dir)
 
 # Level 3: compile and link
 
 def compile_pack(hls_version:str, backend_version:str, vpp_args:List[str]):
+    logger = logging.getLogger()
+    logger.info(f"Compiling with version {hls_version}")
     if "-s" not in vpp_args and "--save-temps" not in vpp_args:
         raise ValueError("This tool requires the --save-temps flag to be set.")
     build_dir = get_build_dir(vpp_args)
@@ -160,28 +165,31 @@ def compile_pack(hls_version:str, backend_version:str, vpp_args:List[str]):
     original_xo = get_output(vpp_args)
 
     # if the kernel has not been compiled yet, compile it
-    if not os.path.exists(original_xo):
+    if not os.path.exists(f"{original_xo}.old"):
         run_vpp(hls_version, vpp_args)
+        # backup the original xo
+        os.system(f"mv {original_xo} {original_xo}.old")
 
     # if the hls version matches the backend version, skip the pack step
     if hls_version == backend_version:
         return
 
-    os.system(f"mv {original_xo} {original_xo}.old")
-    pack_dir = prepare_pack_xo(build_dir, kernel_name)
+    # prepare the pack directory and run the pack step
+    pack_dir, ippack_tcl, output_xo = prepare_pack_xo(build_dir, kernel_name)
     vivado_args = [
         "-mode batch",
         "-notrace",
-        "-source ./create_proj.tcl",
-        "-tclargs",
-        f"--project_name pack_{kernel_name}",
-        f"--top {kernel_name}",
-        f"--origin_dir ."
+        "-source", ippack_tcl
     ]
+    logger.info(f"Packing with version {backend_version}")
     pack_xo(backend_version, vivado_args, pack_dir)
-    os.system(f"cp {pack_dir}/export/{kernel_name}.xo {original_xo}")
+
+    # put the new xo back in place
+    os.system(f"cp {os.path.join(pack_dir, output_xo)} {original_xo}")
 
 def link(backend_version, vpp_args):
+    logger = logging.getLogger()
+    logger.info(f"Linking with version {backend_version}")
     run_vpp(backend_version, vpp_args)
 
 #===============================================================================
@@ -202,18 +210,31 @@ def main():
     '''
     args = sys.argv[1:]
 
+    # setup logging
+    log_file = "svpp.log"
+    if os.path.exists(log_file):
+        backup_id = hash(time.time())
+        os.system(f"mv {log_file} svpp.{backup_id}.backup.log")
+    logging.basicConfig(
+        handlers=[
+            logging.StreamHandler(), logging.FileHandler(log_file)
+        ],
+        level = logging.INFO,
+        format='%(levelname)s: [svpp] %(message)s'
+    )
+    logger = logging.getLogger()
+
     # Print help text
     if "-h" in args or "--help" in args:
         print(main.__doc__)
         return
 
     hls_version, backend_version, vpp_args = parse_args(args)
-    print(f"HLS version {hls_version} -> backend version {backend_version}")
-    print(f"v++ arguments: {vpp_args}")
 
     # If building for software emulation, directly use v++ with banckend version
     target = get_target(vpp_args)
     if target == "sw_emu":
+        logger.info("Running software emulation directly")
         run_vpp(backend_version, vpp_args)
 
     # Otherwise, run the full flow

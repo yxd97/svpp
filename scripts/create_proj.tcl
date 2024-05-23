@@ -224,16 +224,17 @@ set_property vitis_drc {ctrl_protocol ap_ctrl_hs} [ipx::current_core]
 set_property ipi_drc {ignore_freq_hz true} [ipx::current_core]
 
 # add CSR mapping
-source -notrace ${origin_dir}/kernel_regs.tcl
+# source -notrace ${origin_dir}/kernel_regs.tcl
 
 # package xo
-set_property core_revision 4 [ipx::current_core]
-ipx::update_source_project_archive -component [ipx::current_core] -include
-ipx::create_xgui_files [ipx::current_core]
-ipx::update_checksums [ipx::current_core]
-ipx::check_integrity -kernel -xrt [ipx::current_core]
-ipx::save_core [ipx::current_core]
-package_xo -force -xo_path ${origin_dir}/export/${_xil_proj_top_}.xo -kernel_name ${_xil_proj_top_} -ip_directory ${origin_dir}/build_ip -ctrl_protocol ap_ctrl_hs
+# set_property core_revision 4 [ipx::current_core]
+# ipx::update_source_project_archive -component [ipx::current_core] -include
+# ipx::create_xgui_files [ipx::current_core]
+# ipx::update_checksums [ipx::current_core]
+# ipx::check_integrity -kernel -xrt [ipx::current_core]
+# ipx::save_core [ipx::current_core]
+# package_xo -force -xo_path ${origin_dir}/export/${_xil_proj_top_}.xo -kernel_name ${_xil_proj_top_} -ip_directory ${origin_dir}/build_ip -ctrl_protocol ap_ctrl_hs
+source -notrace ${origin_dir}/pack_xo.tcl
 ipx::check_integrity -quiet -kernel -xrt [ipx::current_core]
 ipx::archive_core ${origin_dir}/export/user.org_user_${_xil_proj_top_}_1.0.zip [ipx::current_core]
 close_project
