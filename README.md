@@ -15,8 +15,8 @@ to explore features of new tools.
 This tool, `svpp`, is designed to help you mix-matching the versions of HLS and
 backend tools in Vitis, by providing a wrapper above the `v++` compiler.
 
-What does "s" stands for? Could be "super", "switch", "separate", ("smile", "sweet", ...);
-there are lots of good words that starts with "s"!
+> What does "s" stands for? Could be "super", "switch", "separate", ("sweet", "smile", ...);
+there are lots of good words that start with "s"!
 
 ## Dependencies
 `svpp` is fully in Python, and tested on Python 3.12. It should also work with older Python versions.
